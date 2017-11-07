@@ -1,0 +1,23 @@
+
+--Get a list of tables that have compression enabled
+SELECT DISTINCT
+SERVERPROPERTY('servername') [instance]
+,DB_NAME() [database]
+,QUOTENAME(OBJECT_SCHEMA_NAME(sp.object_id)) +'.'+QUOTENAME(Object_name(sp.object_id))[table]
+,ix.name [index_name]
+,sp.data_compression
+,sp.data_compression_desc
+FROM sys.partitions SP 
+LEFT OUTER JOIN sys.indexes IX 
+ON sp.object_id = ix.object_id 
+and sp.index_id = ix.index_id
+WHERE sp.data_compression <> 0
+ORDER BY 2; 
+
+--USE THIS TO GET AN ESTIMATE OF UNCOMPRESSED INDEX SIZE IN KB
+EXECUTE sp_estimate_data_compression_savings   
+    @schema_name =  'DBO'    
+   ,@object_name =  'ProductActivity_History'   
+   ,@index_id = 1   
+   ,@partition_number = 1
+   ,@data_compression =  'NONE'
