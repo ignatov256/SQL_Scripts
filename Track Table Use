@@ -1,0 +1,75 @@
+
+-- Get all tables and views on the server
+CREATE TABLE #TableNames
+(
+	DatabaseName nvarchar(128),
+	[Schema] nvarchar(128),
+	TableViewName nvarchar(128)
+)  
+
+INSERT INTO #TableNames
+EXECUTE sp_msforeachdb 'Use [?] select db_name() as DatabaseName, s.name AS [Schema], t.name AS TableViewName 
+								from sys.tables t
+								join sys.schemas s
+								   ON t.schema_id = s.schema_id'
+INSERT INTO #TableNames
+EXECUTE sp_msforeachdb 'Use [?] select db_name() as DatabaseName, s.name AS [Schema], o.name AS TableViewName
+								from sys.objects o
+								join sys.schemas s
+								   ON o.schema_id = s.schema_id
+								where type_desc like ''%view%'''
+
+--Get rid of temporary tables from TempDB
+delete from #TableNames where DatabaseName = 'tempdb'
+
+  
+--insert new table names into the tracking table
+MERGE dbo.TrackTableUse AS target
+USING (SELECT DatabaseName, [Schema], TableViewName FROM #TableNames) AS source
+	ON target.DatabaseName = source.DatabaseName AND target.TableViewName = source.TableViewName AND target.[Schema] = source.[Schema]
+WHEN NOT MATCHED THEN
+	INSERT (DatabaseName, [Schema], TableViewName)
+	VALUES (source.DatabaseName, source.[Schema], source.TableViewName);
+
+
+
+
+--update last access times in tracking table
+EXEC sp_msforeachdb 'USE [?];
+UPDATE ttu
+	SET LastRead = t.LastRead
+		,LastWrite = t.LastWrite
+FROM DBUTILS.dbo.TrackTableUse ttu
+JOIN
+		(
+				SELECT DISTINCT
+				DB_NAME() AS DatabaseName
+				   , OBJECT_SCHEMA_NAME(t.[object_id])   AS ''Schema''
+				   , OBJECT_NAME(t.[object_id])          AS ''TableViewName''
+				   , CASE  WHEN rw.last_read > 0 THEN rw.last_read END  AS ''LastRead''
+				   , rw.last_write                        AS ''LastWrite''
+				FROM [?].sys.tables                           AS t
+				LEFT JOIN sys.dm_db_index_usage_stats     AS us
+				  ON us.[object_id]    = t.[object_id]
+				 AND us.database_id    = DB_ID()
+				LEFT JOIN
+					 ( SELECT MAX(up.last_user_read)      AS ''last_read''
+							, MAX(up.last_user_update)    AS ''last_write''
+							, up.[object_id]
+						 FROM (SELECT last_user_seek
+									, last_user_scan
+									, last_user_lookup
+									, [object_id]
+									, database_id
+									, last_user_update, COALESCE(last_user_seek, last_user_scan, last_user_lookup,0) AS null_indicator
+								 FROM sys.dm_db_index_usage_stats) AS sus 
+							  UNPIVOT(last_user_read FOR read_date IN(last_user_seek, last_user_scan, last_user_lookup, null_indicator)) AS up
+						WHERE database_id = DB_ID()
+					 GROUP BY up.[object_id]
+					 ) AS rw
+				  ON rw.[object_id] = us.[object_id]
+		) AS t
+	ON ttu.DatabaseName = t.DatabaseName AND ttu.[Schema] = t.[Schema] AND ttu.TableViewName = t.TableViewName'
+
+
+DROP TABLE #TableNames
