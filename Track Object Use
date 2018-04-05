@@ -1,0 +1,46 @@
+-- Get all stored procedure on the server
+CREATE TABLE #ProcNames
+(
+	DatabaseName nvarchar(128),
+	ObjectName nvarchar(128)
+)
+
+INSERT INTO #ProcNames
+EXECUTE sp_msforeachdb 'Use [?] select db_name() as DatabaseName, name AS ObjectName
+								from sys.procedures'
+
+INSERT INTO #ProcNames
+EXECUTE sp_msforeachdb 'Use [?] select db_name() as DatabaseName, name AS ObjectName
+								from sys.objects where type_desc like ''%FUNCTION%'''
+
+
+--insert new stored procedure names into the tracking table
+MERGE dbo.TrackObjectUse AS target
+USING (SELECT DatabaseName, ObjectName FROM #ProcNames) AS source
+	ON target.DatabaseName = source.DatabaseName AND target.ObjectName = source.ObjectName
+WHEN NOT MATCHED THEN
+	INSERT (DatabaseName, ObjectName)
+	VALUES (source.DatabaseName, source.ObjectName);
+
+
+--update last execution time in tracking table
+
+UPDATE tou
+	SET LastExecution = t.LastExec
+FROM TrackObjectUse tou
+JOIN
+		(
+				SELECT
+					 DB_Name(dest.[dbid]) As databaseName
+					 , Object_Name(dest.objectid, dest.[dbid]) As ObjectName
+					 ,getdate() AS LastExec
+				From sys.dm_exec_cached_plans As deqs
+				Cross Apply sys.dm_exec_sql_text(deqs.plan_handle) As dest
+				Group By db_name(dest.[dbid])
+					, Object_Name(dest.objectid, dest.[dbid])
+		) AS t
+	ON tou.DatabaseName = t.databaseName AND tou.ObjectName = t.ObjectName
+
+DROP TABLE #ProcNames
+
+
